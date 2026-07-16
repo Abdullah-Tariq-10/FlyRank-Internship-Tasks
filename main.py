@@ -20,6 +20,7 @@ tasks = [
 
 @app.post("/tasks", status_code=status.HTTP_201_CREATED)
 def create_task(task_data : TaskCreate):
+    """Create a brand new task in the list."""
     if not task_data.title.strip():
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST,
@@ -40,6 +41,7 @@ def create_task(task_data : TaskCreate):
 
 @app.put("/tasks/{id}")
 def update_task(id: int, task_data: TaskUpdate):
+    """Update an existing task's title and/or status."""
     task_to_update = None
     for task in tasks:
         if task["id"] == id:
@@ -74,6 +76,7 @@ def update_task(id: int, task_data: TaskUpdate):
 
 @app.delete("/tasks/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_task(id : int):
+    """Remove a task from the list by its unique ID."""
     for index,task in enumerate(tasks):
         if task["id"] == id:
             tasks.pop(index)
@@ -87,6 +90,7 @@ def delete_task(id : int):
 
 @app.get("/")
 def read_root():
+    """Get basic API metadata and available resource paths."""
     return {
         "name" : "Task API",
         "version" : "1.0",
@@ -96,15 +100,18 @@ def read_root():
 
 @app.get("/health")
 def check_status():
+    """Verify the API server is healthy and operational."""
     return {"status": "ok"}
 
 
 @app.get("/tasks")
 def get_tasks():
+    """Retrieve all tasks currently in the list."""
     return tasks
 
 @app.get("/tasks/{id}")
 def get_task(id: int):
+    """Retrieve a single task by its unique ID."""
     for task in tasks:
         if task["id"] == id:
             return task
