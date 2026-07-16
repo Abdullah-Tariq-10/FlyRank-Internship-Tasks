@@ -8,6 +8,10 @@ app = FastAPI()
 class TaskCreate(BaseModel):
     title : str = Field(..., min_length=1)
 
+class TaskUpdate(BaseModel):
+    title : str | None = None
+    done : bool | None = None
+
 tasks = [
     {"id" : 1, "title" : "Buy Groceries", "done" : False},
     {"id": 2, "title": "Clean the car", "done": True},
@@ -33,6 +37,52 @@ def create_task(task_data : TaskCreate):
     tasks.append(new_task)
 
     return new_task
+
+@app.put("/tasks/{id}")
+def update_task(id: int, task_data: TaskUpdate):
+    task_to_update = None
+    for task in tasks:
+        if task["id"] == id:
+            task_to_update = task
+            break
+    
+    if not task_to_update:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail = {"error": f"Task {id} not found"}
+        )
+    
+    if task_data.title is None and task_data.done is None:
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = {"error" : "No update fields provided"}
+        )
+    
+    if task_data.title is not None and not task_data.title.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Title cannot be empty"}
+        )
+    
+    if task_data.title is not None:
+        task_to_update["title"] = task_data.title
+    if task_data.done is not None:
+        task_to_update["done"] = task_data.done
+
+    return task_to_update
+
+
+@app.delete("/tasks/{id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_task(id : int):
+    for index,task in enumerate(tasks):
+        if task["id"] == id:
+            tasks.pop(index)
+            return
+
+    raise HTTPException(
+        status_code = status.HTTP_404_NOT_FOUND,
+        detail={"error": f"Task {id} not found"}
+    )
 
 
 @app.get("/")
