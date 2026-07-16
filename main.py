@@ -2,12 +2,16 @@ from fastapi import FastAPI
 
 app = FastAPI()
 
-# Endpoint 1: The root endpoint
+
 @app.get("/")
 def read_root():
-    return {"message": "Hello World! This is my first API."}
+    return {
+        "name" : "Task API",
+        "version" : "1.0",
+        "endpoints" : ["/tasks"]
+    }
 
-# Endpoint 2: A simple status check
-@app.get("/status")
+
+@app.get("/health")
 def check_status():
-    return {"status": "active", "track": "Backend AI Engineering"}
+    return {"status": "ok"}
