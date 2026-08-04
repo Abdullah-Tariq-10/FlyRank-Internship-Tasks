@@ -82,52 +82,72 @@ def create_task(task_data : TaskCreate):
    
 @app.put("/tasks/{id}")
 def update_task(id: int, task_data: TaskUpdate):
-    """Update an existing task's title and/or status."""
-    task_to_update = None
-    for task in tasks:
-        if task["id"] == id:
-            task_to_update = task
-            break
-    
-    if not task_to_update:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail = {"error": f"Task {id} not found"}
-        )
-    
+    """Update an existing task's title and/or status in SQLite."""
+
+    # 1. validation that one field is provided atleast
     if task_data.title is None and task_data.done is None:
         raise HTTPException(
-            status_code = status.HTTP_400_BAD_REQUEST,
-            detail = {"error" : "No update fields provided"}
+            status_code = status.HTTP_404_BAD_REQUEST,
+            detail = {"error": "No update fields provided"}
         )
-    
+
+    # 2. ensure title isnt empty if provided
     if task_data.title is not None and not task_data.title.strip():
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "Title cannot be empty"}
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = {"error" : "Title cannot be empty"}
         )
-    
-    if task_data.title is not None:
-        task_to_update["title"] = task_data.title
-    if task_data.done is not None:
-        task_to_update["done"] = task_data.done
 
-    return task_to_update
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    # 3. check if task exists first
+    cursor.execute("SELECT * FROM tasks WHERE id = ?", (id,))
+    existing_task = cursor.fetchone()
+
+    if existing_task is None:
+        conn.close()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": f"Task {id} not found"}
+        )
+
+    # 4. determine new values (keep current value if field was not passed in request)
+    new_title = task_data.title.strip() if task_data.title is not None else existing_task["title"]
+    new_done = int(task_data.done) if task_data.done is not None else existing_task["done"]
+
+    # 5. execute the SQL UPDATE
+    cursor.execute(
+        "UPDATE tasks SET title = ?, done = ? WHERE id = ?",
+        (new_title, new_done, id)
+    )
+    conn.commit()
+    conn.close()
+
+    return {"id": id, "title": new_title, "done": bool(new_done)}
 
 
 @app.delete("/tasks/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_task(id : int):
-    """Remove a task from the list by its unique ID."""
-    for index,task in enumerate(tasks):
-        if task["id"] == id:
-            tasks.pop(index)
-            return
+    """Remove a task from SQLite by its unique ID."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
 
-    raise HTTPException(
-        status_code = status.HTTP_404_NOT_FOUND,
-        detail={"error": f"Task {id} not found"}
-    )
+    cursor.execute("DELETE FROM tasks WHERE id = ?", (id,))
+    conn.commit()
 
+    deleted_count = cursor.rowcount
+    conn.close()
+
+    if deleted_count == 0:
+        raise HTTPException(
+            status_code = status.HTTP_404_NOT_FOUND,
+            detail = {"error": f"Task {id} not found"}
+        )
+    
+    return
+    
 
 @app.get("/")
 def read_root():
