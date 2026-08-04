@@ -56,25 +56,30 @@ class TaskUpdate(BaseModel):
 
 @app.post("/tasks", status_code=status.HTTP_201_CREATED)
 def create_task(task_data : TaskCreate):
-    """Create a brand new task in the list."""
-    if not task_data.title.strip():
+    """Insert a new task into the SQL database."""
+    title_clean = task_data.title.strip()
+    
+    if not title_clean:
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST,
             detail = {"error" : "Title Cannot Be  Empty"}
         )
 
-    new_id = max(t["id"] for t in tasks) + 1 if tasks else 1
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
 
-    new_task = {
-        "id" : new_id,
-        "title" : task_data.title,
-        "done" : False
-    }
+    cursor.execute(
+        "INSERT INTO tasks (title, done) VALUES (?, ?)",
+        (title_clean, 0)
+    )
+    conn.commit()
 
-    tasks.append(new_task)
+    new_id = cursor.lastrowid
+    conn.close()
 
-    return new_task
+    return {"id": new_id, "title": title_clean, "done": False}
 
+   
 @app.put("/tasks/{id}")
 def update_task(id: int, task_data: TaskUpdate):
     """Update an existing task's title and/or status."""
