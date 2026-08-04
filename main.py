@@ -150,7 +150,10 @@ def get_tasks():
     cursor.execute("SELECT * FROM tasks")
     db_tasks = cursor.fetchall()
     conn.close()
-    return [dict(task) for task in db_tasks]
+    return [
+        {"id": row["id"], "title": row["title"], "done": bool(row["done"])}
+        for row in db_tasks
+    ]
 
 @app.get("/tasks/{id}")
 def get_task(id: int):
@@ -169,5 +172,5 @@ def get_task(id: int):
             detail = {"error" : f"Task {id} not found"}
         )
 
-    return dict(task)
+    return {"id": task["id"], "title": task["title"], "done": bool(task["done"])}
 
