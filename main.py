@@ -1,9 +1,48 @@
-from fastapi import FastAPI
-from fastapi import HTTPException, status
+import sqlite3
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
+DB_FILE = "tasks.db"
 
-app = FastAPI()
+
+# stage 0: Database setup and seeding
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    # create tasks table if it doesn't exist
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            done INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
+    # seed 3 example tasks ONLY if the table is empty
+    cursor.execute("SELECT COUNT(*) FROM tasks")
+    count = cursor.fetchone()[0]
+
+    if count == 0:
+        sample_tasks = [
+            ("Buy milk", 0),
+            ("Learn SQL", 0),
+            ("Celebrate Week 3", 1)
+        ]
+        cursor.executemany("INSERT INTO tasks (title, done) VALUES (?, ?)", sample_tasks)
+        conn.commit()
+
+    conn.close()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
+# Pydantic schemas
 
 class TaskCreate(BaseModel):
     title : str = Field(..., min_length=1)
@@ -12,11 +51,8 @@ class TaskUpdate(BaseModel):
     title : str | None = None
     done : bool | None = None
 
-tasks = [
-    {"id" : 1, "title" : "Buy Groceries", "done" : False},
-    {"id": 2, "title": "Clean the car", "done": True},
-    {"id": 3, "title": "Study Backend AI", "done": False}   
-]
+
+# endpoints
 
 @app.post("/tasks", status_code=status.HTTP_201_CREATED)
 def create_task(task_data : TaskCreate):
@@ -106,17 +142,32 @@ def check_status():
 
 @app.get("/tasks")
 def get_tasks():
-    """Retrieve all tasks currently in the list."""
-    return tasks
+    """Retrieve all tasks currently in the database."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM tasks")
+    db_tasks = cursor.fetchall()
+    conn.close()
+    return [dict(task) for task in db_tasks]
 
 @app.get("/tasks/{id}")
 def get_task(id: int):
-    """Retrieve a single task by its unique ID."""
-    for task in tasks:
-        if task["id"] == id:
-            return task
-    raise HTTPException(
-        status_code = status.HTTP_404_NOT_FOUND,
-        detail= {"error" : f"Task {id} not found"}
-    )    
+    """Retrieve a single task by its unique ID from the database."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM tasks WHERE id = ?", (id,))
+    task = cursor.fetchone()
+    conn.close()
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail = {"error" : f"Task {id} not found"}
+        )
+
+    return dict(task)
 
