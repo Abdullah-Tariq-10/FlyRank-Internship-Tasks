@@ -76,7 +76,7 @@ SELECT * FROM tasks WHERE done = 1;
 
 ---
 
-## ⭐ Optional Extras (SQL Enhancements)
+##  Optional Extras (SQL Enhancements)
 
 This project includes advanced database-level operations for enhanced performance and security:
 
