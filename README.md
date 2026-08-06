@@ -45,11 +45,7 @@ uvicorn main:app --reload
 
 ## 📊 Database Verification & Manual SQL Query
 
-### **Screenshot of Database Execution / Terminal Output**
-
-Below is a verification screenshot showing the database table and executed queries:
-
-### **Example SQL Query Executed (Stage 4)**
+**Example SQL Query Executed (Stage 4)**
 
 ```sql
 SELECT * FROM tasks WHERE done = 1;
@@ -110,4 +106,3 @@ content-type: application/json
 
 FastAPI automatically serves interactive API documentation at `http://localhost:8000/docs`. You can view, test, and run the full CRUD lifecycle directly from your browser.
 
-```
