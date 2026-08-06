@@ -4,7 +4,8 @@ This is a lightweight CRUD (Create, Read, Update, Delete) API built using FastAP
 
 ## 🗄️ Database Architecture & Design Choices
 
-- **Why SQLite Was Chosen:** - **Zero Setup:** Requires no external database server or complex configuration.
+- **Why SQLite Was Chosen:**
+  - **Zero Setup:** Requires no external database server or complex configuration.
   - **Single File Storage:** The entire database lives in a local file (`tasks.db`), making it easy to manage.
   - **Data Persistence:** Ensures that all task data survives server restarts while maintaining the exact same REST API behavior.
 - **Database File Location:**
@@ -35,6 +36,7 @@ pip install fastapi uvicorn
 uvicorn main:app --reload
 
 ```
+
 
 
 *The server will run locally at `http://localhost:8000/`.*
@@ -109,4 +111,3 @@ content-type: application/json
 FastAPI automatically serves interactive API documentation at `http://localhost:8000/docs`. You can view, test, and run the full CRUD lifecycle directly from your browser.
 
 ```
-
