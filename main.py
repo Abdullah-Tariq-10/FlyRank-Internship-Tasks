@@ -167,19 +167,58 @@ def check_status():
 
 
 @app.get("/tasks")
-def get_tasks():
-    """Retrieve all tasks currently in the database."""
+def get_tasks(search: str | None = None, done: bool | None = None):
+    """Retrieve tasks with optional search filtering, done status, and alphabetical sorting."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM tasks")
+    query = "SELECT * FROM tasks WHERE 1=1"
+    params = []
+
+    if search:
+        query += " AND title LIKE ?"
+        params.append(f"%{search.strip()}%")
+
+    if done is not None:
+        query += " AND done = ?"
+        params.append(1 if done else 0)
+
+    query += " ORDER BY title ASC"
+
+    cursor.execute(query, tuple(params))
     db_tasks = cursor.fetchall()
     conn.close()
+
     return [
         {"id": row["id"], "title": row["title"], "done": bool(row["done"])}
         for row in db_tasks
     ]
+
+@app.get("/stats")
+def get_stats():
+    """Return database-calculated statistics using SQL COUNT functions."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    # Total tasks count
+    cursor.execute("SELECT COUNT(*) FROM tasks")
+    total_tasks = cursor.fetchone()[0]
+
+    # Completed tasks count
+    cursor.execute("SELECT COUNT(*) FROM tasks WHERE done = 1")
+    completed_tasks = cursor.fetchone()[0]
+
+    # Pending tasks count
+    pending_tasks = total_tasks - completed_tasks
+    conn.close()
+
+    return {
+        "total_tasks": total_tasks,
+        "completed_tasks": completed_tasks,
+        "pending_tasks": pending_tasks
+    }
+
 
 @app.get("/tasks/{id}")
 def get_task(id: int):
