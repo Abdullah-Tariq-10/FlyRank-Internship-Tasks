@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 DB_FILE = "tasks.db"
 
+# stage 4: Verified manual SQL execution 
 
 # stage 0: Database setup and seeding
 def init_db():
