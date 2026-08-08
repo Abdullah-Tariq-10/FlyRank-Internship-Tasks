@@ -1,40 +1,54 @@
-import sqlite3
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
+import os
+import psycopg
+from psycopg.rows import dict_row
+from dotenv import load_dotenv
 
-DB_FILE = "tasks.db"
 
-# stage 4: Verified manual SQL execution 
+load_dotenv()
 
-# stage 0: Database setup and seeding
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:dev@localhost:5432/tasks"
+)
+
+def get_db_connection():
+    """Helper function to open a connection to PostgreSQL using DATABASE_URL."""
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
+    """Create tasks table if it doesn't exist and seed default tasks if empty."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # Create table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id SERIAL PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    done BOOLEAN NOT NULL DEFAULT FALSE
+                )
+            """)
 
-    # create tasks table if it doesn't exist
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            done INTEGER NOT NULL DEFAULT 0
-        )
-    """)
+            # Check if empty
+            cursor.execute("SELECT COUNT(*) FROM tasks")
+            count = cursor.fetchone()["count"]
 
-    # seed 3 example tasks ONLY if the table is empty
-    cursor.execute("SELECT COUNT(*) FROM tasks")
-    count = cursor.fetchone()[0]
+            # Seed example tasks only on first run
+            if count == 0:
+                sample_tasks = [
+                    ("Buy milk", False),
+                    ("Learn SQL", False),
+                    ("Celebrate Week 3", True)
+                ]
+                cursor.executemany(
+                    "INSERT INTO tasks (title, done) VALUES (%s, %s)",
+                    sample_tasks
+                )
+            conn.commit()
 
-    if count == 0:
-        sample_tasks = [
-            ("Buy milk", 0),
-            ("Learn SQL", 0),
-            ("Celebrate Week 3", 1)
-        ]
-        cursor.executemany("INSERT INTO tasks (title, done) VALUES (?, ?)", sample_tasks)
-        conn.commit()
-
-    conn.close()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -66,19 +80,16 @@ def create_task(task_data : TaskCreate):
             detail = {"error" : "Title Cannot Be  Empty"}
         )
 
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tasks (title, done) VALUES (%s, %s) RETURNING id",
+                (title_clean, False)
+            )
+            new_id = cursor.fetchone()["id"]
+            conn.commit()
 
-    cursor.execute(
-        "INSERT INTO tasks (title, done) VALUES (?, ?)",
-        (title_clean, 0)
-    )
-    conn.commit()
-
-    new_id = cursor.lastrowid
-    conn.close()
-
-    return {"id": new_id, "title": title_clean, "done": False}
+    return {"id" : new_id, "title": title_clean, "done": False}
 
    
 @app.put("/tasks/{id}")
@@ -88,7 +99,7 @@ def update_task(id: int, task_data: TaskUpdate):
     # 1. validation that one field is provided atleast
     if task_data.title is None and task_data.done is None:
         raise HTTPException(
-            status_code = status.HTTP_404_BAD_REQUEST,
+            status_code = status.HTTP_400_BAD_REQUEST,
             detail = {"error": "No update fields provided"}
         )
 
@@ -98,55 +109,44 @@ def update_task(id: int, task_data: TaskUpdate):
             status_code = status.HTTP_400_BAD_REQUEST,
             detail = {"error" : "Title cannot be empty"}
         )
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM tasks WHERE id = %s", (id,))
+            existing_task = cursor.fetchone()
 
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+            if existing_task is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"error": f"Task {id} not found"}
+                )
 
-    # 3. check if task exists first
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (id,))
-    existing_task = cursor.fetchone()
+            new_title = task_data.title.strip() if task_data.title is not None else existing_task["title"]
+            new_done = task_data.done if task_data.done is not None else existing_task["done"]
 
-    if existing_task is None:
-        conn.close()
+            cursor.execute(
+                "UPDATE tasks SET title = %s, done = %s WHERE id = %s",
+                (new_title, new_done, id)
+            )
+            conn.commit()
+
+    return {"id": id, "title": new_title, "done": new_done}
+
+
+
+@app.delete("/tasks/{id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_task(id : int):
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM tasks WHERE id = %s", (id,))
+            conn.commit()
+            deleted_count = cursor.rowcount
+
+    if deleted_count == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": f"Task {id} not found"}
         )
 
-    # 4. determine new values (keep current value if field was not passed in request)
-    new_title = task_data.title.strip() if task_data.title is not None else existing_task["title"]
-    new_done = int(task_data.done) if task_data.done is not None else existing_task["done"]
-
-    # 5. execute the SQL UPDATE
-    cursor.execute(
-        "UPDATE tasks SET title = ?, done = ? WHERE id = ?",
-        (new_title, new_done, id)
-    )
-    conn.commit()
-    conn.close()
-
-    return {"id": id, "title": new_title, "done": bool(new_done)}
-
-
-@app.delete("/tasks/{id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_task(id : int):
-    """Remove a task from SQLite by its unique ID."""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    cursor.execute("DELETE FROM tasks WHERE id = ?", (id,))
-    conn.commit()
-
-    deleted_count = cursor.rowcount
-    conn.close()
-
-    if deleted_count == 0:
-        raise HTTPException(
-            status_code = status.HTTP_404_NOT_FOUND,
-            detail = {"error": f"Task {id} not found"}
-        )
-    
     return
     
 
@@ -169,67 +169,50 @@ def check_status():
 @app.get("/tasks")
 def get_tasks(search: str | None = None, done: bool | None = None):
     """Retrieve tasks with optional search filtering, done status, and alphabetical sorting."""
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            query = "SELECT * FROM tasks WHERE 1=1"
+            params = []
 
-    query = "SELECT * FROM tasks WHERE 1=1"
-    params = []
+            if search:
+                query += " AND title ILIKE %s"
+                params.append(f"%{search.strip()}%")
 
-    if search:
-        query += " AND title LIKE ?"
-        params.append(f"%{search.strip()}%")
+            if done is not None:
+                query += " AND done = %s"
+                params.append(done)
 
-    if done is not None:
-        query += " AND done = ?"
-        params.append(1 if done else 0)
+            query += " ORDER BY title ASC"
 
-    query += " ORDER BY title ASC"
+            cursor.execute(query, params)
+            return cursor.fetchall()
 
-    cursor.execute(query, tuple(params))
-    db_tasks = cursor.fetchall()
-    conn.close()
 
-    return [
-        {"id": row["id"], "title": row["title"], "done": bool(row["done"])}
-        for row in db_tasks
-    ]
 
 @app.get("/stats")
 def get_stats():
     """Return database-calculated statistics using SQL COUNT functions."""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM tasks")
+            total_tasks = cursor.fetchone()["count"]
 
-    # Total tasks count
-    cursor.execute("SELECT COUNT(*) FROM tasks")
-    total_tasks = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM tasks WHERE done = TRUE")
+            completed_tasks = cursor.fetchone()["count"]
 
-    # Completed tasks count
-    cursor.execute("SELECT COUNT(*) FROM tasks WHERE done = 1")
-    completed_tasks = cursor.fetchone()[0]
-
-    # Pending tasks count
-    pending_tasks = total_tasks - completed_tasks
-    conn.close()
-
-    return {
-        "total_tasks": total_tasks,
-        "completed_tasks": completed_tasks,
-        "pending_tasks": pending_tasks
-    }
+            return {
+                "total_tasks": total_tasks,
+                "completed_tasks": completed_tasks,
+                "pending_tasks": total_tasks - completed_tasks
+            }
 
 
 @app.get("/tasks/{id}")
 def get_task(id: int):
-    """Retrieve a single task by its unique ID from the database."""
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (id,))
-    task = cursor.fetchone()
-    conn.close()
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM tasks WHERE id = %s", (id,))
+            task = cursor.fetchone()
 
     if task is None:
         raise HTTPException(
@@ -237,5 +220,5 @@ def get_task(id: int):
             detail = {"error" : f"Task {id} not found"}
         )
 
-    return {"id": task["id"], "title": task["title"], "done": bool(task["done"])}
+    return task
 
