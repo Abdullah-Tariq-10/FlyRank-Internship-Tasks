@@ -152,7 +152,7 @@ def delete_task(id : int):
 
 @app.get("/")
 def read_root():
-    """Get basic API metadata and available resource paths."""
+    """Verify API and DB connection health."""
     return {
         "name" : "Task API",
         "version" : "1.0",
@@ -162,8 +162,18 @@ def read_root():
 
 @app.get("/health")
 def check_status():
-    """Verify the API server is healthy and operational."""
-    return {"status": "ok"}
+    """Verify API and DB connection health."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+        return {"status": "ok", "db": "ok"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"status": "error", "db": "unreachable", "error": str(e)}
+        )
+
 
 
 @app.get("/tasks")
