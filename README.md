@@ -1,27 +1,38 @@
-# W3-A2: Task CRUD API with SQLite Persistence
+# Containerized Task CRUD API (FastAPI + PostgreSQL + Docker Compose)
 
-This is a lightweight CRUD (Create, Read, Update, Delete) API built using FastAPI as part of the FlyRank Backend Internship. In this version, storage has been migrated from an in-memory array to a persistent SQLite database (`tasks.db`).
+A fully containerized RESTful CRUD API built with **FastAPI** and **PostgreSQL 16**, managed seamlessly using **Docker Compose**.
 
-## 🗄️ Database Architecture & Design Choices
-
-* **Why SQLite Was Chosen:**
-* **Zero Setup:** Requires no external database server or complex configuration.
-* **Single File Storage:** The entire database lives in a local file (`tasks.db`), making it easy to manage.
-* **Data Persistence:** Ensures that all task data survives server restarts while maintaining the exact same REST API behavior.
-
-
-* **Database File Location:**
-* The database file is located at the root of the project: `tasks.db`.
-* It is created automatically upon launching the application along with the `tasks` table.
-* `tasks.db` is `.gitignore`d so every clean clone starts fresh with 3 seeded tasks on first run.
-
-
+This repository represents the third architectural iteration of the Task API (In-Memory Array → SQLite → Containerized PostgreSQL).
 
 ---
 
-## 🚀 How to Install & Run
+## 🏗️ Stack Architecture & Design Choices
 
-1. **Clone the repository**:
+* **Framework:** FastAPI (Python 3.11)
+* **Database:** PostgreSQL 16
+* **Database Driver:** `psycopg` (v3 with `dict_row` factory)
+* **Containerization:** Docker & Docker Compose
+* **Configuration:** Environment variables (`.env` with `python-dotenv`)
+
+### Why PostgreSQL & Docker?
+
+1. **Production Parity:** PostgreSQL is an enterprise-grade relational database engine capable of handling high concurrency, ACID transactions, and complex queries.
+2. **Containerization:** Running PostgreSQL inside Docker eliminates local installation overhead, driver incompatibilities, and version mismatch issues.
+3. **Environment Isolation:** Both the API and Database run as isolated services within a shared Docker network, ensuring the application behaves identically on any machine.
+4. **Data Persistence:** Database storage is mounted to a named Docker volume (`taskdata`), guaranteeing that data survives container restarts and tear-downs.
+
+---
+
+## 🚀 Quick Start (One Command Startup)
+
+### Prerequisites
+
+* [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
+* Git
+
+### Setup & Run
+
+1. **Clone the repository:**
 ```bash
 git clone https://github.com/Abdullah-Tariq-10/FlyRank-Internship-Tasks
 cd FlyRank-Internship-Tasks
@@ -29,110 +40,96 @@ cd FlyRank-Internship-Tasks
 ```
 
 
-2. **Install dependencies**:
+2. **Configure Environment Variables:**
+Create a `.env` file based on `.env.example`:
 ```bash
-pip install fastapi uvicorn
+cp .env.example .env
 
 ```
 
 
-3. **Start the server** (Creates `tasks.db` and seeds initial data automatically):
+*(Ensure `.env` contains: `DATABASE_URL=postgresql://postgres:dev@db:5432/tasks`)*
+3. **Launch the entire stack with Docker Compose:**
 ```bash
-uvicorn main:app --reload
+docker compose up --build
 
 ```
 
 
+> **Note:** The API service uses Docker healthchecks (`pg_isready`) to wait for PostgreSQL to fully initialize before launching, preventing startup race conditions.
 
-*The server will run locally at `http://localhost:8000/`.*
+
+4. **Access the Application:**
+* **API Base URL:** `http://localhost:8000`
+* **Interactive OpenAPI (Swagger) Docs:** `http://localhost:8000/docs`
+
+
 
 ---
 
-## 📊 Database Verification & Manual SQL Query
-
-**Example SQL Query Executed (Stage 4)**
-
-```sql
-SELECT * FROM tasks WHERE done = 1;
-
-```
-
-* **Result:** Returns all completed tasks stored in the `tasks` table where the `done` column equals `1`.
-
----
-
-## API Endpoints
+## 🛠️ API Endpoints
 
 | HTTP Method | Path | Description | Expected Status Codes |
 | --- | --- | --- | --- |
-| **GET** | `/` | Get basic API metadata and available resource paths. | `200 OK` |
-| **GET** | `/health` | Verify the API server is healthy and operational. | `200 OK` |
-| **GET** | `/tasks` | Retrieve tasks with optional search, status filtering, and alphabetical sorting. | `200 OK` |
-| **GET** | `/tasks/{id}` | Retrieve a single task by its unique ID from SQLite. | `200 OK`, `404 Not Found` |
-| **POST** | `/tasks` | Create a brand new task and insert it into SQLite. | `201 Created`, `400 Bad Request` |
-| **PUT** | `/tasks/{id}` | Update an existing task's title and/or status in SQLite. | `200 OK`, `400 Bad Request`, `404 Not Found` |
-| **DELETE** | `/tasks/{id}` | Remove a task from SQLite by its unique ID. | `204 No Content`, `404 Not Found` |
-| **GET** | `/stats` | Compute real-time database metrics using SQL `COUNT()` aggregations. | `200 OK` |
+| **GET** | `/` | API metadata and root routing information. | `200 OK` |
+| **GET** | `/health` | Live database connectivity healthcheck (`SELECT 1`). | `200 OK`, `503 Service Unavailable` |
+| **GET** | `/tasks` | Retrieve all tasks (with optional `search` & `done` filters, ordered by title). | `200 OK` |
+| **GET** | `/tasks/{id}` | Retrieve a single task by its primary key ID. | `200 OK`, `404 Not Found` |
+| **POST** | `/tasks` | Create a new task (uses `%s` parameterized queries & `RETURNING id`). | `201 Created`, `400 Bad Request` |
+| **PUT** | `/tasks/{id}` | Update an existing task's title or status. | `200 OK`, `400 Bad Request`, `404 Not Found` |
+| **DELETE** | `/tasks/{id}` | Delete a task by ID. | `204 No Content`, `404 Not Found` |
+| **GET** | `/stats` | Calculate real-time task metrics using SQL `COUNT()` aggregation. | `200 OK` |
 
 ---
 
-##  Optional Extras (SQL Enhancements)
+## 🛡️ Security & Reliability Features
 
-This project includes advanced database-level operations for enhanced performance and security:
-
-1. **Search with SQL (`GET /tasks?search=milk`)**: Filters task titles directly inside SQLite using the SQL `LIKE` operator (`%search%`) with safe parameterized query bindings.
-2. **Filter by Completion Status (`GET /tasks?done=true`)**: Queries specific completion statuses using a dynamic SQL `WHERE done = ?` clause.
-3. **Alphabetical Sorting**: Automatically returns queried tasks ordered alphabetically using SQL's `ORDER BY title ASC`.
-4. **Database Statistics (`GET /stats`)**: Offloads calculations to the database using `SELECT COUNT(*)` queries instead of computing metrics in Python application memory.
+1. **Parameterized Queries:** All SQL operations use placeholders (`%s`) to pass variables separately from query strings, completely immunizing the application against **SQL Injection** attacks.
+2. **Secrets Management:** Sensitive database credentials are stored in `.env` and excluded from Git version control via `.gitignore`. A template `.env.example` is committed for setup guidance.
+3. **Database Health Check Endpoint (`GET /health`):** Directly tests PostgreSQL readiness by executing `SELECT 1` queries to ensure active database connectivity.
 
 ---
 
-## Sample curl Outputs
+## 📊 Verification & Sample Outputs
 
 ### 1. Get All Tasks (GET `/tasks`)
 
 ```bash
 PS D:\flyrank-internship> curl.exe -i http://localhost:8000/tasks
 HTTP/1.1 200 OK
-date: Thu, 06 Aug 2026 11:45:00 GMT
+date: Sat, 08 Aug 2026 19:48:12 GMT
 server: uvicorn
-content-length: 180
 content-type: application/json
 
 [{"id":1,"title":"Buy milk","done":false},{"id":2,"title":"Learn SQL","done":false},{"id":3,"title":"Celebrate Week 3","done":true}]
 
 ```
 
-### 2. Triggering a 404 Error (GET `/tasks/99`)
+### 2. Database Healthcheck (GET `/health`)
 
 ```bash
-PS D:\flyrank-internship> curl.exe -i http://localhost:8000/tasks/99
-HTTP/1.1 404 Not Found
-date: Thu, 06 Aug 2026 11:45:10 GMT
-server: uvicorn
-content-length: 37
-content-type: application/json
-
-{"detail":{"error":"Task 99 not found"}}
-
-```
-
-### 3. Database Statistics (GET `/stats`)
-
-```bash
-PS D:\flyrank-internship> curl.exe -i http://localhost:8000/stats
+PS D:\flyrank-internship> curl.exe -i http://localhost:8000/health
 HTTP/1.1 200 OK
-date: Thu, 06 Aug 2026 12:30:00 GMT
-server: uvicorn
-content-length: 61
 content-type: application/json
 
-{"total_tasks":3,"completed_tasks":1,"pending_tasks":2}
+{"status":"ok","db":"ok"}
 
 ```
 
 ---
 
-## Interactive OpenAPI Documentation
+## 🧹 Stopping & Cleaning Up
 
-FastAPI automatically serves interactive API documentation at `http://localhost:8000/docs`. You can view, test, and run the full CRUD lifecycle directly from your browser.
+To stop the container stack while preserving your database volume:
+
+```bash
+docker compose down
+
+```
+
+To stop the stack and completely remove persistent database volumes (reset state):
+
+```bash
+docker compose down -v
+
+```
