@@ -53,8 +53,8 @@ Authentication operates as a three-party trust model:
 Clone the repository and configure your environment file:
 
 ```bash
-git clone [https://github.com/Abdullah-Tariq-10/w4-authtokens.git](https://github.com/Abdullah-Tariq-10/w4-authtokens.git)
-cd w4-authtokens
+git clone [https://github.com/Abdullah-Tariq-10/FlyRank-Internship-Tasks.git](https://github.com/Abdullah-Tariq-10/FlyRank-Internship-Tasks.git)
+cd FlyRank-Internship-Tasks/w4-authtokens
 cp .env.example .env
 ```
 
