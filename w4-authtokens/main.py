@@ -26,15 +26,23 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# public endpoints
+
 @app.get("/")
 def root():
     return {"message": "Server running and connected to Supabase"}
+
+@app.get("/public/info", status_code=status.HTTP_200_OK)
+def public_info():
+    return {"message": "Welcome stranger! This info is public."}
 
 # Schemas
 class UserAuth(BaseModel):
     email: str
     password: str 
 
+class TokenRefresh(BaseModel):
+    refresh_token : str
 
 # Reusable auth dependency AKA the guard + swagger UI padlock
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -65,8 +73,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         )
 
 
-
-# endpoints 
+# Auth endpoints 
 @app.post("/auth/signup", status_code=status.HTTP_201_CREATED)
 def sign_up(credentials: UserAuth):
     email = credentials.email.strip()
@@ -149,6 +156,33 @@ def log_in(credentials: UserAuth):
             detail={"error": "Invalid login credentials"}
         )
 
+# extra: token refresh flow
+@app.post("/auth/refresh", status_code=status.HTTP_200_OK)
+def refresh_token(payload: TokenRefresh):
+    token = payload.refresh_token.strip()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Refresh token cannot be empty"}
+        )
+    try:
+        response = supabase.auth.refresh_session(token)
+        if not response.session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": "Invalid or expired refresh token"}
+            )
+        return {
+            "access_token": response.session.access_token,
+            "refresh_token": response.session.refresh_token,
+            "token_type": "bearer"
+        }
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid or expired refresh token"}
+        )
+
 
 @app.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 def log_out(current_user = Depends(get_current_user)):
@@ -161,14 +195,6 @@ def log_out(current_user = Depends(get_current_user)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": str(e)}
         )
-
-    
-#  Public & Protected Routes
-
-@app.get("/public/info", status_code=status.HTTP_200_OK)
-def public_info():
-    return {"message": "Welcome stranger! This info is public."}
-
 
 
 # protected endpoints both guarded by Depends(get_current_user)
@@ -188,10 +214,18 @@ def protected_dashboard(current_user = Depends(get_current_user)):
         "user_id": current_user.id
     }
 
+# extra: Authorization 403 Forbidden Gate
 
-
-
-
-
-
-
+@app.get("/protected/admin", status_code=status.HTTP_200_OK)
+def protected_admin(current_user = Depends(get_current_user)):
+    # Check if the authenticated user has an admin domain or specific admin email
+    admin_emails = ["admin@flyrank.com", "superuser@test.com"]
+    if current_user.email not in admin_emails:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "Forbidden: You are authenticated, but lack admin privileges"}
+        )
+    return {
+        "message": "Welcome, Administrator!",
+        "system_status": "All servers operational"
+    }
