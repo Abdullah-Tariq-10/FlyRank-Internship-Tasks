@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header, Depends, status, Response
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from supabase import create_client, Client
 
@@ -15,6 +16,9 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 # Initialize the Supabase Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# HTTP bearer for swagger UI
+security = HTTPBearer()
 
 app = FastAPI(
     title="Auth Login & Protect API",
@@ -32,21 +36,16 @@ class UserAuth(BaseModel):
     password: str 
 
 
-# Reusable auth dependency AKA the guard
-def get_current_user(authorization: str | None = Header(None)):
-    """Extracts and verifies the Bearer JWT with Supabase."""
-    if not authorization or not authorization.startswith("Bearer "):
+# Reusable auth dependency AKA the guard + swagger UI padlock
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Extracts and verifies the Bearer JWT with Supabase and enables the Swagger lock icon."""
+    if not credentials or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "Access token required"}
         )
 
-    token = authorization.replace("Bearer ", "").strip()
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "Access token required"}
-        )
+    token = credentials.credentials
 
     try:
         user_response = supabase.auth.get_user(token)
@@ -68,7 +67,6 @@ def get_current_user(authorization: str | None = Header(None)):
 
 
 # endpoints 
-
 @app.post("/auth/signup", status_code=status.HTTP_201_CREATED)
 def sign_up(credentials: UserAuth):
     email = credentials.email.strip()
