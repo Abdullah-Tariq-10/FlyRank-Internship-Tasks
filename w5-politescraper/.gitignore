@@ -1,0 +1,7 @@
+# Python artifacts
+.venv/
+__pycache__/
+*.pyc
+
+# Scraper cache 
+cache/
