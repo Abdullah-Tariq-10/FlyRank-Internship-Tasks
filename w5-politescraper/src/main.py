@@ -6,10 +6,14 @@ import hashlib
 from datetime import datetime, timezone
 import json
 import os
+import re
 import time
 from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
+from pydantic import ValidationError
+
+from schema import BookRecord
 
 # Configuration
 START_URL = "https://books.toscrape.com/catalogue/page-1.html"
@@ -17,6 +21,10 @@ USER_AGENT = "FlyRankInternship-A9/1.0 (+https://github.com/Abdullah-Tariq-10/Fl
 TIMEOUT_SECONDS = 5
 POLITE_DELAY_SECONDS = 0.5
 MAX_CATALOGUE_PAGES = 3
+
+OUTPUT_DIR = "output"
+BOOKS_FILE = os.path.join(OUTPUT_DIR, "books.json")
+ERRORS_FILE = os.path.join(OUTPUT_DIR, "errors.json")
 
 
 def get_cache_path_for_url(url: str, prefix: str = "page") -> str:
@@ -26,10 +34,8 @@ def get_cache_path_for_url(url: str, prefix: str = "page") -> str:
 
 
 def fetch_page(url: str, cache_file: str) -> str:
-    """
-    Politely fetches a page with local caching, custom user-agent, timeout,
-    and a rate-limiting delay on live requests.
-    """
+    """Politely fetches a page with local caching, timeout, and explicit UTF-8 decoding."""
+ 
     if os.path.exists(cache_file):
         with open(cache_file, "r", encoding="utf-8") as f:
             html = f.read()
@@ -46,6 +52,8 @@ def fetch_page(url: str, cache_file: str) -> str:
         raise RuntimeError(
             f"Failed to fetch {url}: received status code {response.status_code}"
         )
+
+    response.encoding = "utf-8"
 
     os.makedirs(os.path.dirname(cache_file), exist_ok=True)
     with open(cache_file, "w", encoding="utf-8") as f:
@@ -111,13 +119,18 @@ def extract_book_detail(product_url: str, source_page: str) -> dict:
 
     # Price
     price_elem = soup.select_one(".product_main .price_color")
-    price_text = price_elem.get_text(strip=True) if price_elem else ""
+    price_text = ""
+    if price_elem:
+        # Normalize and remove stray encoding artifacts directly
+        price_text = price_elem.get_text(strip=True).replace("\u00a0", " ")
+        if price_text.startswith("Â£"):
+            price_text = price_text.replace("Â£", "£")
 
     # Availability
     avail_elem = soup.select_one(".product_main .availability")
     availability_text = avail_elem.get_text(strip=True) if avail_elem else ""
 
-    # Star Rating (e.g., class "star-rating Three")
+    # Star Rating
     rating_elem = soup.select_one(".product_main .star-rating")
     rating_text = ""
     if rating_elem:
@@ -145,19 +158,47 @@ def extract_book_detail(product_url: str, source_page: str) -> dict:
     }
 
 
+def normalize_price(price_text: str) -> float:
+    """Extracts numeric float from text."""
+    clean_number = re.sub(r"[^\d.]", "", price_text)
+    return float(clean_number) if clean_number else 0.0
+
+
 def main():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     books_to_scrape = discover_books()
-    raw_records = []
+
+    valid_records = []
+    error_records = []
 
     for item in books_to_scrape:
-        record = extract_book_detail(item["product_url"], item["source_page"])
-        raw_records.append(record)
+        raw_data = extract_book_detail(item["product_url"], item["source_page"])
 
-    if raw_records:
-        print("\n--- SAMPLE RAW RECORD ---")
-        print(json.dumps(raw_records[0], indent=2))
+        # Normalization: Add numeric price
+        normalized_data = dict(raw_data)
+        try:
+            normalized_data["price_gbp"] = normalize_price(raw_data["price_text"])
+        except Exception as e:
+            error_records.append({"raw_data": raw_data, "reason": f"Normalization error: {str(e)}"})
+            continue
 
-    print(f"\ndetail_pages={len(raw_records)}")
+        # Schema Validation
+        try:
+            validated = BookRecord(**normalized_data)
+            # Store serializable dictionary (converting HttpUrl to str)
+            valid_records.append(validated.model_dump(mode="json"))
+        except ValidationError as err:
+            error_records.append({"raw_data": normalized_data, "reason": err.errors()})
+
+    # Idempotent writes
+    with open(BOOKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(valid_records, f, indent=2, ensure_ascii=False)
+
+    with open(ERRORS_FILE, "w", encoding="utf-8") as f:
+        json.dump(error_records, f, indent=2, ensure_ascii=False)
+
+    print(f"\nSaved {len(valid_records)} valid records to {BOOKS_FILE}")
+    print(f"Saved {len(error_records)} rejected records to {ERRORS_FILE}")
 
 
 if __name__ == "__main__":
