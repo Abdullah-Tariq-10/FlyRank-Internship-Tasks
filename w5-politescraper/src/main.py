@@ -25,6 +25,13 @@ MAX_CATALOGUE_PAGES = 3
 OUTPUT_DIR = "output"
 BOOKS_FILE = os.path.join(OUTPUT_DIR, "books.json")
 ERRORS_FILE = os.path.join(OUTPUT_DIR, "errors.json")
+REPORT_FILE = os.path.join(OUTPUT_DIR, "run-report.json")
+
+stats = {
+    "pages_fetched" : 0,
+    "cache_hits" : 0,
+    "failed_pages" : 0,
+}
 
 
 def get_cache_path_for_url(url: str, prefix: str = "page") -> str:
@@ -34,33 +41,63 @@ def get_cache_path_for_url(url: str, prefix: str = "page") -> str:
 
 
 def fetch_page(url: str, cache_file: str) -> str:
-    """Politely fetches a page with local caching, timeout, and explicit UTF-8 decoding."""
- 
+    """
+    Politely fetches a page with local caching, timeout, UTF-8 decoding,
+    and a 1-time retry for transient network/5xx errors (never retrying 404/403).
+    """
     if os.path.exists(cache_file):
         with open(cache_file, "r", encoding="utf-8") as f:
             html = f.read()
+        stats["cache_hits"] += 1
         print(f"CACHE HIT: {cache_file} ({len(html.encode('utf-8'))} bytes)")
         return html
 
-    # Rate limiting on real network calls
-    time.sleep(POLITE_DELAY_SECONDS)
-
     headers = {"User-Agent": USER_AGENT}
-    response = requests.get(url, headers=headers, timeout=TIMEOUT_SECONDS)
+    attempts = 0
+    max_attempts = 2
 
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Failed to fetch {url}: received status code {response.status_code}"
-        )
+    while attempts < max_attempts:
+        attempts += 1
+        time.sleep(POLITE_DELAY_SECONDS)
 
-    response.encoding = "utf-8"
+        try:
+            response = requests.get(url, headers=headers, timeout=TIMEOUT_SECONDS)
 
-    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-    with open(cache_file, "w", encoding="utf-8") as f:
-        f.write(response.text)
+            # Do not retry client rejections / not-found
+            if response.status_code in (403, 404):
+                raise RuntimeError(
+                    f"HTTP {response.status_code} on {url} - will not retry"
+                )
 
-    print(f"FETCH: {url} ({len(response.content)} bytes)")
-    return response.text
+            # Check for server-side errors
+            if 500 <= response.status_code < 600:
+                if attempts < max_attempts:
+                    print(f"Server error {response.status_code} on {url}. Retrying once...")
+                    time.sleep(1.0)
+                    continue
+                raise RuntimeError(f"Server error {response.status_code} on {url}")
+
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"Failed to fetch {url}: status code {response.status_code}"
+                )
+
+            response.encoding = "utf-8"
+            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+            with open(cache_file, "w", encoding="utf-8") as f:
+                f.write(response.text)
+
+            stats["pages_fetched"] += 1
+            print(f"FETCH: {url} ({len(response.content)} bytes)")
+            return response.text
+
+        except (requests.Timeout, requests.ConnectionError) as net_err:
+            if attempts < max_attempts:
+                print(f"Transient error ({net_err.__class__.__name__}) on {url}. Retrying once...")
+                time.sleep(1.0)
+                continue
+            raise RuntimeError(f"Network failure on {url}: {str(net_err)}")
+
 
 
 def discover_books():
@@ -165,30 +202,51 @@ def normalize_price(price_text: str) -> float:
 
 
 def main():
+    start_time_iso = datetime.now(timezone.utc).isoformat()
+    t0 = time.time()
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     books_to_scrape = discover_books()
+
+    # --- STAGE 5 RESILIENCE PROOF INJECTION ---
+    # Intentionally inject one bogus URL to prove failure survival
+    books_to_scrape.append({
+        "product_url": "https://books.toscrape.com/catalogue/non-existent-book_9999/index.html",
+        "source_page": "https://books.toscrape.com/catalogue/page-1.html"
+    })
 
     valid_records = []
     error_records = []
 
+    # Handle each item in complete isolation
     for item in books_to_scrape:
-        raw_data = extract_book_detail(item["product_url"], item["source_page"])
+        url = item["product_url"]
+        src = item["source_page"]
 
-        # Normalization: Add numeric price
+        try:
+            raw_data = extract_book_detail(url, src)
+        except Exception as page_err:
+            stats["failed_pages"] += 1
+            print(f"SKIPPED BROKEN PAGE: {url} -> {str(page_err)}")
+            error_records.append({
+                "product_url": url,
+                "reason": f"Fetch/Extraction failure: {str(page_err)}"
+            })
+            continue
+
         normalized_data = dict(raw_data)
         try:
             normalized_data["price_gbp"] = normalize_price(raw_data["price_text"])
-        except Exception as e:
-            error_records.append({"raw_data": raw_data, "reason": f"Normalization error: {str(e)}"})
+        except Exception as norm_err:
+            error_records.append({"raw_data": raw_data, "reason": f"Normalization error: {str(norm_err)}"})
             continue
 
-        # Schema Validation
         try:
             validated = BookRecord(**normalized_data)
-            # Store serializable dictionary (converting HttpUrl to str)
             valid_records.append(validated.model_dump(mode="json"))
         except ValidationError as err:
             error_records.append({"raw_data": normalized_data, "reason": err.errors()})
+
 
     # Idempotent writes
     with open(BOOKS_FILE, "w", encoding="utf-8") as f:
@@ -197,9 +255,28 @@ def main():
     with open(ERRORS_FILE, "w", encoding="utf-8") as f:
         json.dump(error_records, f, indent=2, ensure_ascii=False)
 
-    print(f"\nSaved {len(valid_records)} valid records to {BOOKS_FILE}")
-    print(f"Saved {len(error_records)} rejected records to {ERRORS_FILE}")
+    # End run and write telemetry report
+    duration_ms = int((time.time() - t0) * 1000)
+    report_data = {
+        "start_time": start_time_iso,
+        "duration_ms": duration_ms,
+        "pages_fetched": stats["pages_fetched"],
+        "cache_hits": stats["cache_hits"],
+        "valid_records": len(valid_records),
+        "invalid_records": len(error_records) - stats["failed_pages"],
+        "failed_pages": stats["failed_pages"]
+    }
+
+    with open(REPORT_FILE, "w", encoding="utf-8") as f:
+        json.dump(report_data, f, indent=2)
+
+    print(f"\n--- RUN FINISHED ---")
+    print(f"Valid records : {len(valid_records)}")
+    print(f"Failed pages  : {stats['failed_pages']}")
+    print(f"Report saved  : {REPORT_FILE}")
 
 
 if __name__ == "__main__":
     main()
+
+    

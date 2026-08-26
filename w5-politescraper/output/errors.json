@@ -1,1 +1,6 @@
-[]
+[
+  {
+    "product_url": "https://books.toscrape.com/catalogue/non-existent-book_9999/index.html",
+    "reason": "Fetch/Extraction failure: HTTP 404 on https://books.toscrape.com/catalogue/non-existent-book_9999/index.html - will not retry"
+  }
+]
