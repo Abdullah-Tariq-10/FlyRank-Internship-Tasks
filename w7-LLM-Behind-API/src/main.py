@@ -2,11 +2,12 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
+from src.llm.client import call_llm
 from src.llm.schema import TriageCategory, TriageRequest, TriageResponse, TriageUrgency
 
-load_dotenv()
+load_dotenv(override=True)
 
 app = FastAPI(
     title= "Triage Support API",
@@ -44,9 +45,5 @@ def triage_message(payload: TriageRequest):
             reason="Stub mode active: hard-coded classification response."
         )
 
-    # Real LLM pipeline will be wired here in Stage 2 & 3
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Real LLM mode not yet configured. Set LLM_STUB=1 to test."
-    )
-
+    raw_output = call_llm(payload.text)
+    return PlainTextResponse(content=raw_output, media_type="application/json")
