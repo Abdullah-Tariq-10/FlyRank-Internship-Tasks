@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import json
 import random
 import time
+import hashlib
 from typing import Any, Dict, Tuple
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 import os
@@ -12,10 +13,20 @@ from pydantic import ValidationError
 
 from src.llm.schema import TriageResponse
 
-PROMPT_VERSION = "triage-v1"
+#PROMPT_VERSION = "triage-v1"
+PROMPT_VERSION = "triage-v2"
 PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
 LOGS_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+# In-memory Response Cache
+RESPONSE_CACHE: dict[str, TriageResponse] = {}
+
+
+def get_cache_key(prompt_version: str, user_text: str) -> str:
+    """Computes a deterministic cache key combining prompt version and normalized text."""
+    normalized_input = f"{prompt_version}:{user_text.strip().lower()}"
+    return hashlib.sha256(normalized_input.encode("utf-8")).hexdigest()
 
 
 def load_system_prompt(version: str = PROMPT_VERSION) -> str:
@@ -76,15 +87,32 @@ def quarantine_failure(user_text: str, raw_output: str, error_msg: str, prompt_v
 def execute_triage(user_text: str) -> TriageResponse:
     """
     Coordinates the full Stage 4 production pipeline:
-    1. First call with custom backoff/jitter retry policy
-    2. Parsing & Pydantic schema validation
-    3. Exactly one repair call on validation failure
-    4. Structured usage/token logging and quarantine on unrecoverable failure
+    1. In-memory caching lookup (Extra)
+    2. Model call with custom backoff/jitter retry policy
+    3. Parsing & Pydantic schema validation
+    4. Exactly one repair call on validation failure
+    5. Cache write, structured usage logging, and quarantine on unrecoverable failure
     """
-    start_time = time.time()
-    client = get_llm_client()
     system_prompt = load_system_prompt(PROMPT_VERSION)
     model_name = os.environ.get("LLM_MODEL", "gemma3:1b")
+
+    # 1. Check In-Memory Cache
+    cache_key = get_cache_key(PROMPT_VERSION, user_text)
+    if cache_key in RESPONSE_CACHE:
+        # Cache hit: instant return, 0 tokens, 0ms duration
+        log_cost_metric(
+            PROMPT_VERSION,
+            f"{model_name}-cached",
+            input_tokens=0,
+            output_tokens=0,
+            duration_ms=0.0,
+            needed_repair=False,
+        )
+        return RESPONSE_CACHE[cache_key]
+
+    print(f"[CACHE MISS] Calling LLM ({model_name})...")
+    client = get_llm_client()
+    start_time = time.time()
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -92,12 +120,15 @@ def execute_triage(user_text: str) -> TriageResponse:
     ]
 
     needed_repair = False
-    # Use call_with_retry instead of raw client.chat.completions.create
     raw_output, usage = call_with_retry(client, model_name, messages)
 
     try:
         json_str = extract_json_string(raw_output)
         result = TriageResponse.model_validate_json(json_str)
+        
+        # Save valid result into cache
+        RESPONSE_CACHE[cache_key] = result
+        
         # Log successful initial call
         log_cost_metric(
             PROMPT_VERSION,
@@ -112,7 +143,7 @@ def execute_triage(user_text: str) -> TriageResponse:
         needed_repair = True
         first_error_msg = str(err_1)
 
-        # Repair Retry
+        # Attempt 2: Repair Retry
         repair_messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
@@ -134,6 +165,10 @@ def execute_triage(user_text: str) -> TriageResponse:
         try:
             repair_json_str = extract_json_string(repair_raw)
             result = TriageResponse.model_validate_json(repair_json_str)
+            
+            # Save repaired result into cache
+            RESPONSE_CACHE[cache_key] = result
+            
             # Log successful repair call
             log_cost_metric(
                 PROMPT_VERSION,
@@ -157,7 +192,6 @@ def execute_triage(user_text: str) -> TriageResponse:
                 needed_repair=True,
             )
             raise ValueError(final_error_msg)
-
 
 
 def call_with_retry(client: OpenAI, model: str, messages: list, max_retries: int = 2) -> Tuple[str, Dict[str, Any]]:
