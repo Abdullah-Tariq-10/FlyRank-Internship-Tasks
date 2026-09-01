@@ -167,7 +167,3 @@ LLM_MODEL=gemma3:1b
 ## 🔧 What I'd Fix With Another Day
 
 * Implement XML message boundary tags (e.g., `<user_input>...</user_input>`) inside system prompt templates to prevent prompt injection payloads from hijacking category enums.
-
-```
-
-```
