@@ -39,7 +39,14 @@ def health_check():
 
 @app.post("/triage", response_model=TriageResponse)
 def triage_message(payload: TriageRequest):
-    # Stub mode check
+    # 1. Operator Kill Switch Check (LLM_ENABLED=false)
+    if os.environ.get("LLM_ENABLED", "true").lower() == "false":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Triage AI processing is currently disabled by operator kill switch.",
+        )
+
+    # 2. Stub Mode Check
     if os.environ.get("LLM_STUB", "0") == "1":
         return TriageResponse(
             category=TriageCategory.BILLING,
@@ -48,12 +55,29 @@ def triage_message(payload: TriageRequest):
             reason="Stub mode active: hard-coded classification response.",
         )
 
+    # 3. Production Triage Execution with Mapped Exceptions
     try:
-        # Calls the full Stage 3 pipeline (Validate -> Repair -> Quarantine)
         return execute_triage(payload.text)
+    except PermissionError as perm_err:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Authentication/configuration error with AI provider: {str(perm_err)}",
+        )
+    except TimeoutError as time_err:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"AI model provider timed out: {str(time_err)}",
+        )
     except ValueError as val_err:
-        # Step 4: Return 422 Unprocessable Entity when the model fails validation after repair
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Model output failed schema validation after repair attempt: {str(val_err)}",
+            detail=f"Model output failed schema validation: {str(val_err)}",
         )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Upstream provider failure: {str(e)}",
+        )
+
+
+    
