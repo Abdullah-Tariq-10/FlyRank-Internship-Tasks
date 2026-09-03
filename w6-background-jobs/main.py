@@ -1,5 +1,6 @@
 import datetime
 import inspect
+import logging
 import os
 import uuid
 from fastapi import FastAPI, HTTPException, Request, status
@@ -72,6 +73,24 @@ async def make_report(*args, **kwargs):
 
     return {"status" : "done", "report_id": report_id}
 
+
+# func 3: heartbeat cron
+@inngest_client.create_function(
+    fn_id="heartbeat",
+    trigger=inngest.TriggerCron(cron="* * * * *")
+)
+async def heartbeat(*args, **kwargs):
+    pending = sum(1 for r in reports.values() if r.get("status") == "pending")
+    done = sum(1 for r in reports.values() if r.get("status") == "done")
+    # A report is failed if it triggered failure or is neither pending nor done
+    failed = sum(1 for r in reports.values() if r.get("status") not in ["pending", "done"])
+
+    summary_line = f"Heartbeat: {pending} pending, {done} done, {failed} failed"
+    print(f"\n[CRON HEARTBEAT] {summary_line}\n")
+    return {"summary": summary_line}
+
+
+
 app = FastAPI(title="Background Job Service")
 
 #custom handler to ensure missing/invalid field return HTTP 400
@@ -132,7 +151,7 @@ def get_report_status(report_id: str):
 inngest.fast_api.serve(
     app,
     inngest_client,
-    [say_hello, make_report]
+    [say_hello, make_report, heartbeat]
 )
 
 
