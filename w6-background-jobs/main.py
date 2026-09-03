@@ -2,7 +2,9 @@ import datetime
 import inspect
 import os
 import uuid
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 import inngest
 import inngest.fast_api
 from pydantic import BaseModel, Field
@@ -38,9 +40,11 @@ async def say_hello(*args, **kwargs):
 
 # func 2: make-report
 @inngest_client.create_function(
-        fn_id = "make-report",
-        trigger=inngest.TriggerEvent(event="report/requested")
+    fn_id = "make-report",
+    trigger=inngest.TriggerEvent(event="report/requested"),
+    retries=2
 )
+
 async def make_report(*args, **kwargs):
     ctx = args[0] if len(args) > 0 else kwargs.get("ctx")
     step = args[1] if len(args) > 1 else getattr(ctx, "step", None)
@@ -56,6 +60,9 @@ async def make_report(*args, **kwargs):
 
         #step 2: build the final report and update the in-memory store
         def build_report():
+            if topic == "fail":
+                raise RuntimeError("The report oven is broken!")
+            
             if report_id in reports:
                 reports[report_id]["status"] = "done"
                 reports[report_id]["result"] = f"Execute summary on {topic}: Market trends are positive."
@@ -67,6 +74,14 @@ async def make_report(*args, **kwargs):
 
 app = FastAPI(title="Background Job Service")
 
+#custom handler to ensure missing/invalid field return HTTP 400
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"error" : "Field 'topic' is required and cannot be empty"}
+    )
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -74,6 +89,13 @@ def health():
 # endpoint: POST /reports
 @app.post("/reports", status_code=status.HTTP_202_ACCEPTED)
 async def create_report(payload: ReportCreate):
+    # Reject whitespace-only topic
+    if not payload.topic.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Field 'topic' cannot be whitespace"}
+        )
+
     report_id = str(uuid.uuid4())[:8]
     
     # save initial pending state

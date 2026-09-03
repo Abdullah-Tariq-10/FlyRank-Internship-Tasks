@@ -1,0 +1,2 @@
+### Retries vs Input Validation
+A wrong input must be rejected at the door with a 400 Bad Request because deterministic errors will never succeed no matter how many times they are repeated; only transient operational failures (a wrong moment) deserve a retry with backoff.
