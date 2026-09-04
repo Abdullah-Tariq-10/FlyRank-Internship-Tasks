@@ -186,5 +186,3 @@ The Inngest dashboard shows the registered functions and their execution history
 ![Inngest Dashboard](dashboard.png)
 
 
-I also fixed the `npx` command so the URL is plain Markdown/code rather than the malformed nested link syntax, and removed all instances of `[cite: 1]`.
-```
