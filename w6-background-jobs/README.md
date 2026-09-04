@@ -1,12 +1,12 @@
 # Background Job Service (FastAPI + Inngest)
 
-An asynchronous background job system built with FastAPI and Inngest. The API decouples slow processing from HTTP request-response loops by issuing immediate `202 Accepted` receipts, executing work across durable checkpointed steps with exponential backoff retries, and running scheduled heartbeat jobs via cron triggers.
+An asynchronous background job system built with FastAPI and Inngest. The API decouples slow processing from HTTP request-response loops by issuing immediate `202 Accepted` receipts, executing work across durable checkpointed steps with exponential backoff retries, and running scheduled heartbeat jobs via cron triggers[cite: 1].
 
 ---
 
 ## Running the Application
 
-This service requires two concurrently running processes: the FastAPI web application and the Inngest Dev Server.
+This service requires two concurrently running processes: the FastAPI web application and the Inngest Dev Server[cite: 1].
 
 ### Terminal 1: Start the API Server
 
@@ -18,7 +18,7 @@ python main.py
 ### Terminal 2: Start the Inngest Dev Server
 
 ```bash
-npx inngest-cli@latest dev -u http://127.0.0.1:8000/api/inngest
+npx inngest-cli@latest dev -u [http://127.0.0.1:8000/api/inngest](http://127.0.0.1:8000/api/inngest)
 
 ```
 
@@ -125,11 +125,15 @@ A wrong input must be rejected at the door with a 400 Bad Request because a dete
 2. **Weekly on Sunday at 22:00:** The cron expression `0 22 * * 0` executes the heartbeat task once a week specifically at 22:00 UTC every Sunday (at minute 0 of hour 22 on weekday 0).
 
 
+
 ### Extras: The Restart Experiment
 
 When the FastAPI process was stopped mid-execution during the 8-second sleep step and restarted three seconds later, the background job did not crash or duplicate previous work. Because Inngest executes durable steps, the execution context survived the server outage and resumed cleanly from the checkpointed step once the API reconnected.
 
 ---
 
-## Dashboard 
+## Dashboard Proof
 ![Inngest Dashboard](dashboard.png)
+git push origin main
+
+```
