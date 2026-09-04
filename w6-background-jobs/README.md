@@ -1,67 +1,72 @@
 # Background Job Service (FastAPI + Inngest)
 
-An asynchronous background job system built with FastAPI and Inngest. The API decouples slow processing from HTTP request-response loops by issuing immediate `202 Accepted` receipts, executing work across durable checkpointed steps with exponential backoff retries, and running scheduled heartbeat jobs via cron triggers[cite: 1].
+An asynchronous background job system built with **FastAPI** and **Inngest**. The API decouples slow processing from HTTP request-response loops by issuing immediate `202 Accepted` responses, while background work is executed through durable, checkpointed steps with exponential-backoff retries.
+
+The service also includes scheduled heartbeat jobs using Inngest cron triggers.
 
 ---
 
 ## Running the Application
 
-This service requires two concurrently running processes: the FastAPI web application and the Inngest Dev Server[cite: 1].
+This service requires **two concurrently running processes**:
+
+1. FastAPI web application
+2. Inngest Dev Server
 
 ### Terminal 1: Start the API Server
 
 ```bash
 python main.py
-
-```
+````
 
 ### Terminal 2: Start the Inngest Dev Server
 
 ```bash
-npx inngest-cli@latest dev -u [http://127.0.0.1:8000/api/inngest](http://127.0.0.1:8000/api/inngest)
-
+npx inngest-cli@latest dev -u http://127.0.0.1:8000/api/inngest
 ```
 
-Once running, the Inngest local dashboard is accessible at `http://localhost:8288`.
+Once both services are running, the local Inngest dashboard is available at:
+
+```text
+http://localhost:8288
+```
 
 ---
 
-## Endpoints and Background Functions
+## API Endpoints
 
-### API Endpoints
-
-| Method | Path | Status Code | Description |
-| --- | --- | --- | --- |
-| `GET` | `/health` | `200 OK` | Service health status check |
-| `POST` | `/reports` | `202 Accepted` / `400 Bad Request` | Validates input, records pending state, and dispatches job
-
- |
-| `GET` | `/reports/{id}` | `200 OK` / `404 Not Found` | Status polling endpoint returning state and computed result
-
- |
-| `GET` | `/reports` | `200 OK` | (Extra) Control panel listing all tracked jobs and statuses
-
- |
-
-### Inngest Functions
-
-| Function ID | Trigger | Type | Execution Behavior |
-| --- | --- | --- | --- |
-| `say-hello` | `test/hello` | Event | Durably sleeps for 5 seconds and returns confirmation text.
-
- |
-| `make-report` | `report/requested` | Event | Sleeps for 8 seconds (`do-the-slow-work`), executes `build-report`, and retries up to 2 times on failures.
-
- |
-| `heartbeat` | `* * * * *` | Cron | Wakes up every minute on the clock to log counts of pending, done, and failed jobs.
-
- |
+| Method | Endpoint        | Status                             | Description                                                                 |
+| ------ | --------------- | ---------------------------------- | --------------------------------------------------------------------------- |
+| `GET`  | `/health`       | `200 OK`                           | Returns the service health status.                                          |
+| `POST` | `/reports`      | `202 Accepted` / `400 Bad Request` | Validates input, creates a pending job, and dispatches the background task. |
+| `GET`  | `/reports/{id}` | `200 OK` / `404 Not Found`         | Returns the current status and result of a report job.                      |
+| `GET`  | `/reports`      | `200 OK`                           | Lists all tracked jobs and their current statuses.                          |
 
 ---
 
-## Execution Proof (Fast Door & Eventual Consistency)
+## Inngest Background Functions
 
-### 1. Fast Door: Dispatched in Milliseconds (202 Accepted)
+| Function      | Trigger            | Type  | Execution Behavior                                                                     |
+| ------------- | ------------------ | ----- | -------------------------------------------------------------------------------------- |
+| `say-hello`   | `test/hello`       | Event | Sleeps durably for 5 seconds and returns a confirmation message.                       |
+| `make-report` | `report/requested` | Event | Sleeps for 8 seconds, builds the report, and retries up to 2 times if execution fails. |
+| `heartbeat`   | `* * * * *`        | Cron  | Runs every minute and logs the number of pending, completed, and failed jobs.          |
+
+---
+
+## Execution Proof
+
+The system demonstrates the **Fast Door + Eventual Consistency** pattern:
+
+1. The API immediately accepts the request.
+2. The job is stored as `pending`.
+3. Background processing happens asynchronously.
+4. The client can poll the job status.
+5. Once processing finishes, the status changes to `done` and the result becomes available.
+
+### 1. Fast Door: `202 Accepted`
+
+A report request returns immediately instead of waiting for the slow background task:
 
 ```http
 POST /reports HTTP/1.1
@@ -77,10 +82,15 @@ content-length: 36
 content-type: application/json
 
 {"id": "127fd0e6", "status": "pending"}
-
 ```
 
-### 2. Immediate Poll (~2s later)
+The API does not wait for the report to be generated.
+
+---
+
+### 2. Immediate Poll
+
+Approximately 2 seconds later:
 
 ```http
 GET /reports/127fd0e6 HTTP/1.1
@@ -90,10 +100,15 @@ HTTP/1.1 200 OK
 content-type: application/json
 
 {"id": "127fd0e6", "topic": "cats", "status": "pending"}
-
 ```
 
-### 3. Final Poll After Completion (~10s later)
+The job is still being processed in the background.
+
+---
+
+### 3. Final Poll After Completion
+
+After approximately 10 seconds:
 
 ```http
 GET /reports/127fd0e6 HTTP/1.1
@@ -105,35 +120,71 @@ server: uvicorn
 content-length: 112
 content-type: application/json
 
-{"id": "127fd0e6", "topic": "cats", "status": "done", "result": "Execute summary on cats: Market trends are positive."}
-
+{
+  "id": "127fd0e6",
+  "topic": "cats",
+  "status": "done",
+  "result": "Execute summary on cats: Market trends are positive."
+}
 ```
+
+The background job has completed successfully and the generated result is now available through the polling endpoint.
 
 ---
 
 ## Concept Questions & Explanations
 
-### Stage 3: Retries vs. Input Validation
+### Retries vs. Input Validation
 
-A wrong input must be rejected at the door with a 400 Bad Request because a deterministic bug will never succeed no matter how many times it is repeated; only a transient failure (a wrong moment) deserves an automatic retry with backoff.
+Invalid input should be rejected immediately with a `400 Bad Request`.
 
-### Stage 4: Cron Heartbeat Schedules
+A deterministic failure will not be fixed by retrying the same request. Automatic retries are intended for **transient failures**, where the operation may succeed if attempted again later.
 
-1. **Daily at 08:00:** The cron expression `0 8 * * *` executes the heartbeat task every day at 08:00 UTC (at minute 0 of hour 8).
+In short:
 
+* **Invalid input → `400 Bad Request`**
+* **Transient processing failure → Retry with backoff**
 
-2. **Weekly on Sunday at 22:00:** The cron expression `0 22 * * 0` executes the heartbeat task once a week specifically at 22:00 UTC every Sunday (at minute 0 of hour 22 on weekday 0).
+---
 
+## Cron Heartbeat Schedules
 
+### Daily at 08:00
 
-### Extras: The Restart Experiment
+```text
+0 8 * * *
+```
 
-When the FastAPI process was stopped mid-execution during the 8-second sleep step and restarted three seconds later, the background job did not crash or duplicate previous work. Because Inngest executes durable steps, the execution context survived the server outage and resumed cleanly from the checkpointed step once the API reconnected.
+Runs every day at **08:00 UTC**.
+
+### Weekly on Sunday at 22:00
+
+```text
+0 22 * * 0
+```
+
+Runs every Sunday at **22:00 UTC**.
+
+---
+
+## Restart Experiment
+
+The durability of Inngest was tested by stopping the FastAPI process while a background job was executing its 8-second sleep step.
+
+The FastAPI process was restarted approximately three seconds later.
+
+The job did not need to be manually restarted or duplicated. Because the work is executed through Inngest's durable steps, the execution state survives the temporary API outage and the workflow can continue once the application reconnects.
+
+This demonstrates the benefit of separating background execution from the HTTP request lifecycle.
 
 ---
 
 ## Dashboard Proof
-![Inngest Dashboard](dashboard.png)
-git push origin main
 
+The Inngest dashboard shows the registered functions and their execution history.
+
+![Inngest Dashboard](dashboard.png)
+
+
+I also fixed the `npx` command so the URL is plain Markdown/code rather than the malformed nested link syntax, and removed all instances of `[cite: 1]`.
 ```
