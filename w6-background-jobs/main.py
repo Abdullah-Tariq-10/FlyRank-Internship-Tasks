@@ -147,6 +147,12 @@ def get_report_status(report_id: str):
         )
     return reports[report_id]
 
+# Control Panel List Endpoint
+@app.get("/reports")
+def list_reports():
+    return list(reports.values())
+
+
 # 4. serve both functions at /api/inngest
 inngest.fast_api.serve(
     app,
