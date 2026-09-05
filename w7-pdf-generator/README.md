@@ -1,0 +1,1 @@
+When to offload report generation: Move report generation out of the request and into an asynchronous background queue when the report processing duration degrades HTTP request thresholds (typically $>1\text{--}2$ seconds), when concurrent user requests exhaust server worker threads, or when datasets grow large enough that browser rendering risks request timeouts
