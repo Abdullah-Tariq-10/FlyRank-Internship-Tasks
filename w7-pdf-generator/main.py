@@ -4,10 +4,9 @@ import sqlite3
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
-from playwright.sync_api import sync_playwright
+from pydantic import BaseModel, Field
 
-from render_pdf import REPORTS_DIR, generate_html
+from render_pdf import REPORTS_DIR, render_pdf
 from report_data import DB_FILE, get_report_data
 
 app = FastAPI(title="PDF Report Generator")
@@ -15,6 +14,7 @@ app = FastAPI(title="PDF Report Generator")
 
 class ReportRequest(BaseModel):
     force: Optional[bool] = False
+    days: Optional[int] = Field(default=30, ge=1, le=365)
 
 
 def init_reports_table():
@@ -24,6 +24,7 @@ def init_reports_table():
         CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             path TEXT NOT NULL,
+            days INTEGER DEFAULT 30,
             created_at TEXT NOT NULL
         )
     """)
@@ -39,57 +40,76 @@ def health_check():
     return {"status": "ok"}
 
 
-# 1. POST /reports: Idempotent generation with proper response code routing
+# Control Panel: List all generated reports
+@app.get("/reports")
+def list_reports():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, path, days, created_at FROM reports ORDER BY id DESC")
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "id": row["id"],
+            "days": row["days"],
+            "created_at": row["created_at"],
+            "file": f"/reports/{row['id']}/file",
+            "exists_on_disk": os.path.exists(row["path"]) if row["path"] else False
+        }
+        for row in rows
+    ]
+
+
+# POST /reports: Parameterized + Idempotent generation
 @app.post("/reports")
 def create_report(response: Response, payload: Optional[ReportRequest] = None):
     force = payload.force if payload else False
+    days = payload.days if payload else 30
     today_str = datetime.now().strftime("%Y-%m-%d")
 
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    # Check if a report was already generated today
+    # Idempotency check: same day + same parameter configuration
     if not force:
         cursor.execute(
-            "SELECT id, path FROM reports WHERE DATE(created_at) = ? ORDER BY id DESC LIMIT 1",
-            (today_str,),
+            """
+            SELECT id, path FROM reports 
+            WHERE DATE(created_at) = ? AND days = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (today_str, days),
         )
         existing = cursor.fetchone()
         if existing and os.path.exists(existing["path"]):
             conn.close()
-            # Return existing report with 200 OK
             response.status_code = status.HTTP_200_OK
             return {
                 "id": existing["id"],
                 "file": f"/reports/{existing['id']}/file"
             }
 
-    # Otherwise, proceed to generate fresh report
+    # Generate new report
     os.makedirs(REPORTS_DIR, exist_ok=True)
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    cursor.execute("INSERT INTO reports (path, created_at) VALUES (?, ?)", ("", created_at))
+    cursor.execute(
+        "INSERT INTO reports (path, days, created_at) VALUES (?, ?, ?)",
+        ("", days, created_at)
+    )
     report_id = cursor.lastrowid
     conn.commit()
 
-    file_path = os.path.join(REPORTS_DIR, f"{report_id}.pdf")
+    # Professional clean filename
+    date_stamp = datetime.now().strftime("%Y-%m-%d")
+    file_path = os.path.join(REPORTS_DIR, f"sales-report-{date_stamp}-id{report_id}.pdf")
 
     try:
-        data = get_report_data()
-        html_content = generate_html(data)
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.set_content(html_content, wait_until="networkidle")
-            page.pdf(
-                path=file_path,
-                format="A4",
-                print_background=True,
-                margin={"top": "20mm", "bottom": "20mm", "left": "15mm", "right": "15mm"},
-            )
-            browser.close()
+        data = get_report_data(days=days)
+        render_pdf(data=data, output_path=file_path)
 
         cursor.execute("UPDATE reports SET path = ? WHERE id = ?", (file_path, report_id))
         conn.commit()
@@ -100,7 +120,6 @@ def create_report(response: Response, payload: Optional[ReportRequest] = None):
     finally:
         conn.close()
 
-    # New report created: return 201 Created
     response.status_code = status.HTTP_201_CREATED
     return {
         "id": report_id,
@@ -108,13 +127,13 @@ def create_report(response: Response, payload: Optional[ReportRequest] = None):
     }
 
 
-# 2. GET /reports/{id}: Returns metadata and download link
+# GET /reports/{id}: Metadata lookup
 @app.get("/reports/{report_id}")
 def get_report_record(report_id: int):
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    cursor.execute("SELECT id, path, created_at FROM reports WHERE id = ?", (report_id,))
+    cursor.execute("SELECT id, path, days, created_at FROM reports WHERE id = ?", (report_id,))
     row = cursor.fetchone()
     conn.close()
 
@@ -123,12 +142,13 @@ def get_report_record(report_id: int):
 
     return {
         "id": row["id"],
+        "days": row["days"],
         "created_at": row["created_at"],
         "file": f"/reports/{row['id']}/file"
     }
 
 
-# 3. GET /reports/{id}/file: Moves the megabytes
+# GET /reports/{id}/file: Streams PDF
 @app.get("/reports/{report_id}/file")
 def download_report_file(report_id: int):
     conn = sqlite3.connect(DB_FILE)
@@ -141,8 +161,10 @@ def download_report_file(report_id: int):
     if not row or not os.path.exists(row["path"]):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PDF artifact not found on disk")
 
+    filename = os.path.basename(row["path"])
     return FileResponse(
         path=row["path"],
         media_type="application/pdf",
-        filename=f"report_{report_id}.pdf"
+        filename=filename,
+        headers={"Content-Disposition": f"inline; filename={filename}"}
     )
